@@ -1,23 +1,21 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.env
+*.py[cod]
+*$py.class
+
+# Virtual environments
 venv/
-.env/
-*.egg-info/
+.env
 
 # Jupyter
 .ipynb_checkpoints/
 
 # Data
 data/
-*.csv
 
-# IDEs
-.vscode/
-.idea/
+# Streamlit
+.streamlit/secrets.toml
 
 # OS
 .DS_Store
+Thumbs.db
