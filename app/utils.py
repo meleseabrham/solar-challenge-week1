@@ -10,6 +10,9 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from scipy import stats
+import io
+import zipfile
+
 import requests
 
 # Paths & configuration -----------------------------------------------------------------
@@ -34,6 +37,49 @@ GITHUB_OWNER = "meleseabrham"
 GITHUB_REPO = "solar-challenge-week1"
 GITHUB_BRANCH = "main"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/data"
+
+# Secondary fallback: downloadable archive from Dropbox shared folder
+DROPBOX_DATA_ARCHIVE_URL = (
+    "https://www.dropbox.com/scl/fo/j0dznkh3zt5fpv8pwuzjk/ANqnHNjthlQWS8g38GqaCrg"
+    "?rlkey=owgskm621o3v40dic91c1iz87&st=ef6zavjl&dl=1"
+)
+
+def _ensure_remote_datasets_from_dropbox() -> None:
+    """Download and extract datasets from the shared Dropbox archive if available.
+
+    The shared link should point to the folder containing all CSVs. Dropbox delivers
+    a zip archive when `dl=1` is appended.
+    """
+
+    marker = DATA_DIR / ".dropbox_sync_complete"
+    if marker.exists():
+        return
+
+    try:
+        response = requests.get(DROPBOX_DATA_ARCHIVE_URL, timeout=60)
+        response.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to download Dropbox archive: {exc}") from exc
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    expected_files = {cfg["clean"] for cfg in FILE_MAP.values()}
+    expected_files.update({cfg["raw"] for cfg in FILE_MAP.values() if "raw" in cfg})
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        for member in archive.namelist():
+            if not member.lower().endswith(".csv"):
+                continue
+            filename = Path(member).name
+            if filename not in expected_files:
+                continue
+            target_path = DATA_DIR / filename
+            with archive.open(member) as source, target_path.open("wb") as target:
+                target.write(source.read())
+
+    try:
+        marker.touch()
+    except Exception:
+        pass
 
 FILE_MAP = {
     "Benin": {"clean": "benin_clean.csv", "raw": "benin-malanville.csv"},
@@ -280,10 +326,20 @@ def load_country_dataset(country: str, apply_outlier_detection: bool = True) -> 
                 try:
                     resp = requests.get(url, timeout=30)
                     resp.raise_for_status()
-                    df = pd.read_csv(pd.compat.StringIO(resp.text))  # type: ignore[attr-defined]
+                    df = pd.read_csv(io.StringIO(resp.text))
                     break
                 except Exception as exc:
                     last_error = exc
+            if df is None:
+                # Try Dropbox archive fallback (single download containing all CSVs)
+                try:
+                    _ensure_remote_datasets_from_dropbox()
+                except Exception as exc:
+                    last_error = exc
+                if clean_path.exists():
+                    df = pd.read_csv(clean_path)
+                elif raw_path.exists():
+                    df = pd.read_csv(raw_path)
             if df is None:
                 raise FileNotFoundError(
                     f"No dataset available for {country}. Looked at "
