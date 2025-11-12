@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from scipy import stats
+import io
+import shutil
+
+import gdown
 import requests
 
 # Paths & configuration -----------------------------------------------------------------
@@ -34,6 +38,50 @@ GITHUB_OWNER = "meleseabrham"
 GITHUB_REPO = "solar-challenge-week1"
 GITHUB_BRANCH = "main"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/data"
+
+# Secondary fallback: shared Google Drive folder containing CSV datasets
+GOOGLE_DRIVE_FOLDER_URL = (
+    "https://drive.google.com/drive/folders/1egxRe2HqbUYy_D1isV4nImlVhE0IhDRl?usp=sharing"
+)
+
+
+@lru_cache(maxsize=1)
+def _ensure_remote_datasets_from_google_drive() -> None:
+    """Download datasets from the shared Google Drive folder if available."""
+
+    marker = DATA_DIR / ".gdrive_sync_complete"
+    if marker.exists():
+        return
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    download_dir = DATA_DIR / "_gdrive_download"
+
+    if download_dir.exists():
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+    try:
+        gdown.download_folder(
+            url=GOOGLE_DRIVE_FOLDER_URL,
+            output=str(download_dir),
+            use_cookies=False,
+            quiet=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to download Google Drive folder: {exc}") from exc
+
+    expected_files = {cfg["clean"] for cfg in FILE_MAP.values()}
+    expected_files.update({cfg["raw"] for cfg in FILE_MAP.values() if "raw" in cfg})
+
+    if download_dir.exists():
+        for file_path in download_dir.rglob("*.csv"):
+            if file_path.name not in expected_files:
+                continue
+            target_path = DATA_DIR / file_path.name
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(file_path), target_path)
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+    marker.touch()
 
 FILE_MAP = {
     "Benin": {"clean": "benin_clean.csv", "raw": "benin-malanville.csv"},
@@ -280,10 +328,20 @@ def load_country_dataset(country: str, apply_outlier_detection: bool = True) -> 
                 try:
                     resp = requests.get(url, timeout=30)
                     resp.raise_for_status()
-                    df = pd.read_csv(pd.compat.StringIO(resp.text))  # type: ignore[attr-defined]
+                    df = pd.read_csv(io.StringIO(resp.text))
                     break
                 except Exception as exc:
                     last_error = exc
+            if df is None:
+                # Try Dropbox archive fallback (single download containing all CSVs)
+                try:
+                    _ensure_remote_datasets_from_google_drive()
+                except Exception as exc:
+                    last_error = exc
+                if clean_path.exists():
+                    df = pd.read_csv(clean_path)
+                elif raw_path.exists():
+                    df = pd.read_csv(raw_path)
             if df is None:
                 raise FileNotFoundError(
                     f"No dataset available for {country}. Looked at "
