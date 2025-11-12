@@ -9,19 +9,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Robust imports to support both package and script execution
-# Prioritize local utils within this repository to avoid conflicts with similarly named packages
+# Robust imports to support both package and script execution without name conflicts
+# We first try absolute package import (`app.utils`), then fall back to loading utils.py by path.
 try:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from utils import (  # type: ignore
-        AVAILABLE_COUNTRIES,
-        SOLAR_COLS,
-        country_palette,
-        load_combined_dataset,
-        summarise_metrics,
-        top_regions,
-    )
-except Exception:
     from app.utils import (
         AVAILABLE_COUNTRIES,
         SOLAR_COLS,
@@ -30,6 +20,24 @@ except Exception:
         summarise_metrics,
         top_regions,
     )
+except Exception:
+    # Load utils.py from the same folder as this file using importlib to avoid clashes
+    import importlib.util as _ilu
+
+    _current_dir = Path(__file__).resolve().parent
+    _utils_path = _current_dir / "utils.py"
+    _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Unable to locate utils module at {_utils_path}")
+    _utils = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_utils)
+
+    AVAILABLE_COUNTRIES = _utils.AVAILABLE_COUNTRIES
+    SOLAR_COLS = _utils.SOLAR_COLS
+    country_palette = _utils.country_palette
+    load_combined_dataset = _utils.load_combined_dataset
+    summarise_metrics = _utils.summarise_metrics
+    top_regions = _utils.top_regions
 
 st.set_page_config(
     page_title="Solar Potential Dashboard",
