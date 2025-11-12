@@ -57,10 +57,13 @@ plotly
 - ❌ **Wrong**: `app\main.py` (backslash - Windows format)
 
 #### Data Files
-If your app needs data files from the `data/` directory:
-- Option 1: Include them in the repository (if they're small)
-- Option 2: Use Streamlit secrets for external data sources
-- Option 3: Load data from a public URL or cloud storage
+The app uses **Streamlit's file uploader** to allow users to upload CSV files directly:
+- Users can upload CSV files through the sidebar file uploader
+- Supported files: `benin_clean.csv`, `sierraleone_clean.csv`, `togo_clean.csv`
+- Files are processed in-memory (no need to store on server)
+- The app will automatically detect which country each file belongs to based on the filename
+
+**Note**: Data files are excluded from the repository (see `.gitignore`) to keep the repo size manageable. Users upload their own data files when using the app.
 
 #### Environment Variables (if needed)
 If you need environment variables:
