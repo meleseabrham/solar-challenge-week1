@@ -11,8 +11,9 @@ import pandas as pd
 import plotly.express as px
 from scipy import stats
 import io
-import zipfile
+import shutil
 
+import gdown
 import requests
 
 # Paths & configuration -----------------------------------------------------------------
@@ -38,49 +39,49 @@ GITHUB_REPO = "solar-challenge-week1"
 GITHUB_BRANCH = "main"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/data"
 
-# Secondary fallback: downloadable archive from Dropbox shared folder
-DROPBOX_DATA_ARCHIVE_URL = (
-    "https://www.dropbox.com/scl/fo/j0dznkh3zt5fpv8pwuzjk/ANqnHNjthlQWS8g38GqaCrg"
-    "?rlkey=owgskm621o3v40dic91c1iz87&st=ef6zavjl&dl=1"
+# Secondary fallback: shared Google Drive folder containing CSV datasets
+GOOGLE_DRIVE_FOLDER_URL = (
+    "https://drive.google.com/drive/folders/1egxRe2HqbUYy_D1isV4nImlVhE0IhDRl?usp=sharing"
 )
 
+
 @lru_cache(maxsize=1)
-def _ensure_remote_datasets_from_dropbox() -> None:
-    """Download and extract datasets from the shared Dropbox archive if available.
+def _ensure_remote_datasets_from_google_drive() -> None:
+    """Download datasets from the shared Google Drive folder if available."""
 
-    The shared link should point to the folder containing all CSVs. Dropbox delivers
-    a zip archive when `dl=1` is appended.
-    """
-
-    marker = DATA_DIR / ".dropbox_sync_complete"
+    marker = DATA_DIR / ".gdrive_sync_complete"
     if marker.exists():
         return
 
-    try:
-        response = requests.get(DROPBOX_DATA_ARCHIVE_URL, timeout=60)
-        response.raise_for_status()
-    except Exception as exc:
-        raise RuntimeError(f"Failed to download Dropbox archive: {exc}") from exc
-
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    download_dir = DATA_DIR / "_gdrive_download"
+
+    if download_dir.exists():
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+    try:
+        gdown.download_folder(
+            url=GOOGLE_DRIVE_FOLDER_URL,
+            output=str(download_dir),
+            use_cookies=False,
+            quiet=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to download Google Drive folder: {exc}") from exc
+
     expected_files = {cfg["clean"] for cfg in FILE_MAP.values()}
     expected_files.update({cfg["raw"] for cfg in FILE_MAP.values() if "raw" in cfg})
 
-    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        for member in archive.namelist():
-            if not member.lower().endswith(".csv"):
+    if download_dir.exists():
+        for file_path in download_dir.rglob("*.csv"):
+            if file_path.name not in expected_files:
                 continue
-            filename = Path(member).name
-            if filename not in expected_files:
-                continue
-            target_path = DATA_DIR / filename
-            with archive.open(member) as source, target_path.open("wb") as target:
-                target.write(source.read())
+            target_path = DATA_DIR / file_path.name
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(file_path), target_path)
+        shutil.rmtree(download_dir, ignore_errors=True)
 
-    try:
-        marker.touch()
-    except Exception:
-        pass
+    marker.touch()
 
 FILE_MAP = {
     "Benin": {"clean": "benin_clean.csv", "raw": "benin-malanville.csv"},
@@ -334,7 +335,7 @@ def load_country_dataset(country: str, apply_outlier_detection: bool = True) -> 
             if df is None:
                 # Try Dropbox archive fallback (single download containing all CSVs)
                 try:
-                    _ensure_remote_datasets_from_dropbox()
+                    _ensure_remote_datasets_from_google_drive()
                 except Exception as exc:
                     last_error = exc
                 if clean_path.exists():
