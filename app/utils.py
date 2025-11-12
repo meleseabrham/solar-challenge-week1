@@ -44,6 +44,7 @@ DROPBOX_DATA_ARCHIVE_URL = (
     "?rlkey=owgskm621o3v40dic91c1iz87&st=ef6zavjl&dl=1"
 )
 
+@lru_cache(maxsize=1)
 def _ensure_remote_datasets_from_dropbox() -> None:
     """Download and extract datasets from the shared Dropbox archive if available.
 
