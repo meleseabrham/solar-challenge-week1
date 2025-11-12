@@ -281,12 +281,12 @@ with tab_trend:
 with tab_table:
     top_n = st.slider("Top locations", min_value=3, max_value=10, value=5)
     top_table = top_regions(filtered_df, metric, top_n=top_n)
-    st.dataframe(top_table, use_container_width=True)
+    st.dataframe(top_table, width='stretch')
 
 # Summary table -------------------------------------------------------------------------
 
 with st.expander("Summary statistics", expanded=True):
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary, width='stretch')
 
 if uploaded_data:
     st.caption("Data source: uploaded CSV files")
