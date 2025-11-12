@@ -272,7 +272,7 @@ with tab_box:
         xaxis_title="Country",
         legend_title="Country",
     )
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 with tab_trend:
     resampled_df = resample_metric(filtered_df, freq_choice, metric)
@@ -294,7 +294,7 @@ with tab_trend:
             xaxis_title="Timestamp",
             legend_title="Country",
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
 with tab_table:
     top_n = st.slider("Top locations", min_value=3, max_value=10, value=5)
