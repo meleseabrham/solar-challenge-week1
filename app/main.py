@@ -9,45 +9,33 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Robust imports to support both package and script execution without name conflicts
-# We first try absolute package import (`app.utils`), then fall back to loading utils.py by path.
+# Always load utils.py from the same folder using importlib to avoid name clashes
+import importlib.util as _ilu
+
+_current_dir = Path(__file__).resolve().parent
+_utils_path = _current_dir / "utils.py"
 try:
-    from app.utils import (
-        AVAILABLE_COUNTRIES,
-        SOLAR_COLS,
-        country_palette,
-        load_combined_dataset,
-        summarise_metrics,
-        top_regions,
-    )
-except Exception:
-    # Load utils.py from the same folder as this file using importlib to avoid clashes
-    import importlib.util as _ilu
-
-    _current_dir = Path(__file__).resolve().parent
-    _utils_path = _current_dir / "utils.py"
-    try:
-        _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
-        if _spec is None or _spec.loader is None:
-            st.error(f"Unable to locate utils module at {_utils_path}")
-            st.stop()
-        _utils = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_utils)
-    except Exception as _e:
-        st.error(
-            "Failed to load local utilities module.\n\n"
-            f"Location attempted: {_utils_path}\n\n"
-            f"Error: {_e}"
-        )
-        st.write("sys.path:", sys.path)
+    _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
+    if _spec is None or _spec.loader is None:
+        st.error(f"Unable to locate utils module at {_utils_path}")
         st.stop()
+    _utils = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_utils)
+except Exception as _e:
+    st.error(
+        "Failed to load local utilities module.\n\n"
+        f"Location attempted: {_utils_path}\n\n"
+        f"Error: {_e}"
+    )
+    st.write("sys.path:", sys.path)
+    st.stop()
 
-    AVAILABLE_COUNTRIES = _utils.AVAILABLE_COUNTRIES
-    SOLAR_COLS = _utils.SOLAR_COLS
-    country_palette = _utils.country_palette
-    load_combined_dataset = _utils.load_combined_dataset
-    summarise_metrics = _utils.summarise_metrics
-    top_regions = _utils.top_regions
+AVAILABLE_COUNTRIES = _utils.AVAILABLE_COUNTRIES
+SOLAR_COLS = _utils.SOLAR_COLS
+country_palette = _utils.country_palette
+load_combined_dataset = _utils.load_combined_dataset
+summarise_metrics = _utils.summarise_metrics
+top_regions = _utils.top_regions
 
 st.set_page_config(
     page_title="Solar Potential Dashboard",
