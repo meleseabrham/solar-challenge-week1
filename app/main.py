@@ -10,8 +10,10 @@ import plotly.express as px
 import streamlit as st
 
 # Robust imports to support both package and script execution
-try:  # preferred when package context is available
-    from app.utils import (
+# Prioritize local utils within this repository to avoid conflicts with similarly named packages
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from utils import (  # type: ignore
         AVAILABLE_COUNTRIES,
         SOLAR_COLS,
         country_palette,
@@ -19,9 +21,8 @@ try:  # preferred when package context is available
         summarise_metrics,
         top_regions,
     )
-except Exception:  # fallback when run as plain script via `streamlit run app/main.py`
-    sys.path.append(str(Path(__file__).resolve().parent))
-    from utils import (  # type: ignore
+except Exception:
+    from app.utils import (
         AVAILABLE_COUNTRIES,
         SOLAR_COLS,
         country_palette,

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
+from scipy import stats
 
 # Paths & configuration -----------------------------------------------------------------
 
@@ -57,6 +59,158 @@ def _coerce_solar_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").clip(lower=0)
     return df
+
+
+# Metric-specific outlier detection thresholds
+# GHI: Global Horizontal Irradiance - typically 0-1400 W/m², more variable
+# DNI: Direct Normal Irradiance - typically 0-1000 W/m², sensitive to clear sky
+# DHI: Diffuse Horizontal Irradiance - typically 0-300 W/m², more stable
+OUTLIER_THRESHOLDS = {
+    "GHI": {"z_score": 3.5, "iqr_multiplier": 2.0, "max_physical": 1500},
+    "DNI": {"z_score": 3.0, "iqr_multiplier": 1.8, "max_physical": 1100},
+    "DHI": {"z_score": 3.2, "iqr_multiplier": 2.2, "max_physical": 400},
+}
+
+
+def detect_outliers_ghi(series: pd.Series) -> pd.Series:
+    """Detect outliers in GHI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["GHI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["GHI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["GHI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_outliers_dni(series: pd.Series) -> pd.Series:
+    """Detect outliers in DNI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["DNI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method (tighter for DNI)
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["DNI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["DNI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_outliers_dhi(series: pd.Series) -> pd.Series:
+    """Detect outliers in DHI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["DHI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["DHI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["DHI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_solar_metric_outliers(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """Detect outliers for GHI, DNI, and DHI using metric-specific procedures.
+    
+    Returns:
+        Tuple of (outlier_flags_dataframe, combined_outlier_mask)
+    """
+    outlier_flags = pd.DataFrame(index=df.index)
+    combined_mask = pd.Series(False, index=df.index)
+    
+    if "GHI" in df.columns:
+        ghi_outliers = detect_outliers_ghi(df["GHI"])
+        outlier_flags["GHI_outlier"] = ghi_outliers
+        combined_mask |= ghi_outliers
+    
+    if "DNI" in df.columns:
+        dni_outliers = detect_outliers_dni(df["DNI"])
+        outlier_flags["DNI_outlier"] = dni_outliers
+        combined_mask |= dni_outliers
+    
+    if "DHI" in df.columns:
+        dhi_outliers = detect_outliers_dhi(df["DHI"])
+        outlier_flags["DHI_outlier"] = dhi_outliers
+        combined_mask |= dhi_outliers
+    
+    return outlier_flags, combined_mask
 
 
 def _clean_dataframe(df: pd.DataFrame, apply_outlier_detection: bool = True) -> pd.DataFrame:
