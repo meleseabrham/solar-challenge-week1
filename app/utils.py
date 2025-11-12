@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from scipy import stats
+import requests
 
 # Paths & configuration -----------------------------------------------------------------
 
@@ -27,6 +28,12 @@ else:
     REPO_ROOT = _current_file.parents[2]
     DATA_DIR = REPO_ROOT / "solar-challenge-week1" / "data"
 SOLAR_COLS = ["GHI", "DNI", "DHI"]
+
+# For Cloud fallback: download from GitHub raw if files aren't present locally
+GITHUB_OWNER = "meleseabrham"
+GITHUB_REPO = "solar-challenge-week1"
+GITHUB_BRANCH = "main"
+GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/data"
 
 FILE_MAP = {
     "Benin": {"clean": "benin_clean.csv", "raw": "benin-malanville.csv"},
@@ -260,12 +267,35 @@ def load_country_dataset(country: str, apply_outlier_detection: bool = True) -> 
     if clean_path.exists():
         df = pd.read_csv(clean_path)
     else:
-        if not raw_path.exists():
-            raise FileNotFoundError(f"No dataset available for {country} at {raw_path}")
-        df = pd.read_csv(raw_path)
+        if raw_path.exists():
+            df = pd.read_csv(raw_path)
+        else:
+            # Cloud fallback: try fetching from GitHub raw
+            candidate_urls = [f"{GITHUB_RAW_BASE}/{config['clean']}"]
+            if "raw" in config:
+                candidate_urls.append(f"{GITHUB_RAW_BASE}/{config['raw']}")
+            last_error: Exception | None = None
+            df = None  # type: ignore[assignment]
+            for url in candidate_urls:
+                try:
+                    resp = requests.get(url, timeout=30)
+                    resp.raise_for_status()
+                    df = pd.read_csv(pd.compat.StringIO(resp.text))  # type: ignore[attr-defined]
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if df is None:
+                raise FileNotFoundError(
+                    f"No dataset available for {country}. Looked at "
+                    f"{raw_path} and {', '.join(candidate_urls)}. Last error: {last_error}"
+                )
         df = _clean_dataframe(df, apply_outlier_detection=apply_outlier_detection)
-        clean_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(clean_path, index=False)
+        try:
+            clean_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(clean_path, index=False)
+        except Exception:
+            # In read-only environments, just skip saving
+            pass
 
     df = _clean_dataframe(df.copy(), apply_outlier_detection=apply_outlier_detection)
     df["country"] = country
