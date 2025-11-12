@@ -26,11 +26,21 @@ except Exception:
 
     _current_dir = Path(__file__).resolve().parent
     _utils_path = _current_dir / "utils.py"
-    _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
-    if _spec is None or _spec.loader is None:
-        raise ImportError(f"Unable to locate utils module at {_utils_path}")
-    _utils = _ilu.module_from_spec(_spec)
-    _spec.loader.exec_module(_utils)
+    try:
+        _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
+        if _spec is None or _spec.loader is None:
+            st.error(f"Unable to locate utils module at {_utils_path}")
+            st.stop()
+        _utils = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_utils)
+    except Exception as _e:
+        st.error(
+            "Failed to load local utilities module.\n\n"
+            f"Location attempted: {_utils_path}\n\n"
+            f"Error: {_e}"
+        )
+        st.write("sys.path:", sys.path)
+        st.stop()
 
     AVAILABLE_COUNTRIES = _utils.AVAILABLE_COUNTRIES
     SOLAR_COLS = _utils.SOLAR_COLS
