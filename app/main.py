@@ -9,26 +9,33 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Robust imports to support both package and script execution
-try:  # preferred when package context is available
-    from app.utils import (
-        AVAILABLE_COUNTRIES,
-        SOLAR_COLS,
-        country_palette,
-        load_combined_dataset,
-        summarise_metrics,
-        top_regions,
+# Always load utils.py from the same folder using importlib to avoid name clashes
+import importlib.util as _ilu
+
+_current_dir = Path(__file__).resolve().parent
+_utils_path = _current_dir / "utils.py"
+try:
+    _spec = _ilu.spec_from_file_location("solar_app_utils", _utils_path)
+    if _spec is None or _spec.loader is None:
+        st.error(f"Unable to locate utils module at {_utils_path}")
+        st.stop()
+    _utils = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_utils)
+except Exception as _e:
+    st.error(
+        "Failed to load local utilities module.\n\n"
+        f"Location attempted: {_utils_path}\n\n"
+        f"Error: {_e}"
     )
-except Exception:  # fallback when run as plain script via `streamlit run app/main.py`
-    sys.path.append(str(Path(__file__).resolve().parent))
-    from utils import (  # type: ignore
-        AVAILABLE_COUNTRIES,
-        SOLAR_COLS,
-        country_palette,
-        load_combined_dataset,
-        summarise_metrics,
-        top_regions,
-    )
+    st.write("sys.path:", sys.path)
+    st.stop()
+
+AVAILABLE_COUNTRIES = _utils.AVAILABLE_COUNTRIES
+SOLAR_COLS = _utils.SOLAR_COLS
+country_palette = _utils.country_palette
+load_combined_dataset = _utils.load_combined_dataset
+summarise_metrics = _utils.summarise_metrics
+top_regions = _utils.top_regions
 
 st.set_page_config(
     page_title="Solar Potential Dashboard",
@@ -58,6 +65,35 @@ choose metrics, and surface priority locations for downstream planning.
 
 # Sidebar configuration -----------------------------------------------------------------
 
+st.sidebar.header("Data Upload")
+st.sidebar.markdown("Upload CSV files for analysis:")
+
+# File uploader for data files
+uploaded_files = st.sidebar.file_uploader(
+    "Upload CSV files",
+    type=["csv"],
+    accept_multiple_files=True,
+    help="Upload benin_clean.csv, sierraleone_clean.csv, and/or togo_clean.csv"
+)
+
+# Store uploaded files in session state
+if uploaded_files:
+    if "uploaded_data" not in st.session_state:
+        st.session_state.uploaded_data = {}
+    
+    for uploaded_file in uploaded_files:
+        filename = uploaded_file.name.lower()
+        # Map filenames to countries
+        if "benin" in filename:
+            st.session_state.uploaded_data["Benin"] = uploaded_file
+        elif "sierraleone" in filename or "sierra" in filename:
+            st.session_state.uploaded_data["Sierra Leone"] = uploaded_file
+        elif "togo" in filename:
+            st.session_state.uploaded_data["Togo"] = uploaded_file
+    
+    if st.session_state.uploaded_data:
+        st.sidebar.success(f"✅ {len(st.session_state.uploaded_data)} file(s) uploaded")
+
 st.sidebar.header("Controls")
 selected_countries: Iterable[str] = st.sidebar.multiselect(
     "Countries",
@@ -77,19 +113,36 @@ if not selected_countries:
     st.stop()
 
 @st.cache_data(show_spinner=False)
-def get_data(countries: tuple[str, ...]) -> pd.DataFrame:
-    return load_combined_dataset(countries)
+def get_data(countries: tuple[str, ...], uploaded_files: dict | None = None) -> pd.DataFrame:
+    return load_combined_dataset(countries, uploaded_files=uploaded_files)
+
+# Get uploaded files from session state
+uploaded_data = st.session_state.get("uploaded_data", {})
 
 # Defensive load with empty-state guidance
 try:
     with st.spinner("Loading datasets..."):
-        raw_df = get_data(tuple(selected_countries))
+        raw_df = get_data(tuple(selected_countries), uploaded_files=uploaded_data if uploaded_data else None)
 except FileNotFoundError as exc:
-    st.error("Required CSV files are missing in data/. Please place the country CSVs there and reload.")
-    st.info(
-        "Expected files include: benin_clean.csv or benin-malanville.csv, "
-        "sierraleone_clean.csv or sierraleone-bumbuna.csv, togo_clean.csv"
-    )
+    if not uploaded_data:
+        st.error("⚠️ No data files available")
+        st.info(
+            """
+            **Please upload CSV files using the file uploader in the sidebar.**
+            
+            Expected files:
+            - `benin_clean.csv` or `benin-malanville.csv`
+            - `sierraleone_clean.csv` or `sierraleone-bumbuna.csv`
+            - `togo_clean.csv` or `togo-dapaong_qc.csv`
+            
+            Alternatively, if running locally, place these files in the `data/` directory.
+            """
+        )
+    else:
+        st.error(f"Error loading data: {exc}")
+    st.stop()
+except Exception as exc:
+    st.error(f"Error processing data: {exc}")
     st.stop()
 
 palette_map = country_palette(selected_countries)
@@ -207,7 +260,7 @@ with tab_box:
         xaxis_title="Country",
         legend_title="Country",
     )
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 with tab_trend:
     resampled_df = resample_metric(filtered_df, freq_choice, metric)
@@ -229,18 +282,19 @@ with tab_trend:
             xaxis_title="Timestamp",
             legend_title="Country",
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
 with tab_table:
     top_n = st.slider("Top locations", min_value=3, max_value=10, value=5)
     top_table = top_regions(filtered_df, metric, top_n=top_n)
-    st.dataframe(top_table, use_container_width=True)
+    st.dataframe(top_table, width='stretch')
 
 # Summary table -------------------------------------------------------------------------
 
 with st.expander("Summary statistics", expanded=True):
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary, width='stretch')
 
-st.caption(
-    "Data source: local CSV files stored in the project's data/ directory."
-)
+if uploaded_data:
+    st.caption("Data source: uploaded CSV files")
+else:
+    st.caption("Data source: local CSV files stored in the project's data/ directory.")

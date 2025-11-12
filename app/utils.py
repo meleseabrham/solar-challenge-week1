@@ -4,17 +4,36 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
+from scipy import stats
+import requests
 
 # Paths & configuration -----------------------------------------------------------------
 
 # Project layout: repository_root/solar-challenge-week1/data
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = REPO_ROOT / "solar-challenge-week1" / "data"
+# Handle both local development and Streamlit Cloud deployment
+_current_file = Path(__file__).resolve()
+# In Streamlit Cloud: app/utils.py -> go up 1 level to repo root
+# In local dev: app/utils.py -> up 2 levels to project root, then into solar-challenge-week1
+if (_current_file.parents[1] / "data").exists():
+    # We're in the solar-challenge-week1 repository (Streamlit Cloud or direct repo)
+    REPO_ROOT = _current_file.parents[1]
+    DATA_DIR = REPO_ROOT / "data"
+else:
+    # Fallback: assume nested structure (local development)
+    REPO_ROOT = _current_file.parents[2]
+    DATA_DIR = REPO_ROOT / "solar-challenge-week1" / "data"
 SOLAR_COLS = ["GHI", "DNI", "DHI"]
+
+# For Cloud fallback: download from GitHub raw if files aren't present locally
+GITHUB_OWNER = "meleseabrham"
+GITHUB_REPO = "solar-challenge-week1"
+GITHUB_BRANCH = "main"
+GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/data"
 
 FILE_MAP = {
     "Benin": {"clean": "benin_clean.csv", "raw": "benin-malanville.csv"},
@@ -49,16 +68,193 @@ def _coerce_solar_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+# Metric-specific outlier detection thresholds
+# GHI: Global Horizontal Irradiance - typically 0-1400 W/m², more variable
+# DNI: Direct Normal Irradiance - typically 0-1000 W/m², sensitive to clear sky
+# DHI: Diffuse Horizontal Irradiance - typically 0-300 W/m², more stable
+OUTLIER_THRESHOLDS = {
+    "GHI": {"z_score": 3.5, "iqr_multiplier": 2.0, "max_physical": 1500},
+    "DNI": {"z_score": 3.0, "iqr_multiplier": 1.8, "max_physical": 1100},
+    "DHI": {"z_score": 3.2, "iqr_multiplier": 2.2, "max_physical": 400},
+}
+
+
+def detect_outliers_ghi(series: pd.Series) -> pd.Series:
+    """Detect outliers in GHI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["GHI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["GHI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["GHI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_outliers_dni(series: pd.Series) -> pd.Series:
+    """Detect outliers in DNI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["DNI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method (tighter for DNI)
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["DNI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["DNI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_outliers_dhi(series: pd.Series) -> pd.Series:
+    """Detect outliers in DHI using metric-specific thresholds."""
+    if series.empty or series.isna().all():
+        return pd.Series(False, index=series.index)
+    
+    mask = pd.Series(False, index=series.index)
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    
+    if numeric_series.dropna().empty or len(numeric_series.dropna()) < 10:
+        return mask
+    
+    valid_idx = numeric_series.dropna().index
+    valid_values = numeric_series.loc[valid_idx]
+    
+    # Z-score method
+    z_scores = np.abs(stats.zscore(valid_values, nan_policy="omit"))
+    z_threshold = OUTLIER_THRESHOLDS["DHI"]["z_score"]
+    z_outliers = valid_idx[z_scores > z_threshold]
+    mask.loc[z_outliers] = True
+    
+    # IQR method
+    Q1 = valid_values.quantile(0.25)
+    Q3 = valid_values.quantile(0.75)
+    IQR = Q3 - Q1
+    multiplier = OUTLIER_THRESHOLDS["DHI"]["iqr_multiplier"]
+    lower_bound = Q1 - multiplier * IQR
+    upper_bound = Q3 + multiplier * IQR
+    iqr_outliers = series.index[(numeric_series < lower_bound) | (numeric_series > upper_bound)]
+    mask.loc[iqr_outliers] = True
+    
+    # Physical maximum
+    max_physical = OUTLIER_THRESHOLDS["DHI"]["max_physical"]
+    physical_outliers = series.index[numeric_series > max_physical]
+    mask.loc[physical_outliers] = True
+    
+    return mask
+
+
+def detect_solar_metric_outliers(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """Detect outliers for GHI, DNI, and DHI using metric-specific procedures.
+    
+    Returns:
+        Tuple of (outlier_flags_dataframe, combined_outlier_mask)
+    """
+    outlier_flags = pd.DataFrame(index=df.index)
+    combined_mask = pd.Series(False, index=df.index)
+    
+    if "GHI" in df.columns:
+        ghi_outliers = detect_outliers_ghi(df["GHI"])
+        outlier_flags["GHI_outlier"] = ghi_outliers
+        combined_mask |= ghi_outliers
+    
+    if "DNI" in df.columns:
+        dni_outliers = detect_outliers_dni(df["DNI"])
+        outlier_flags["DNI_outlier"] = dni_outliers
+        combined_mask |= dni_outliers
+    
+    if "DHI" in df.columns:
+        dhi_outliers = detect_outliers_dhi(df["DHI"])
+        outlier_flags["DHI_outlier"] = dhi_outliers
+        combined_mask |= dhi_outliers
+    
+    return outlier_flags, combined_mask
+
+
+def _clean_dataframe(df: pd.DataFrame, apply_outlier_detection: bool = True) -> pd.DataFrame:
+    """Clean dataframe with optional metric-specific outlier detection."""
     df = _coerce_timestamp(df)
     df = _coerce_solar_columns(df)
     df = df.dropna(subset=SOLAR_COLS, how="all")
     df = df.drop_duplicates()
+    
+    if apply_outlier_detection:
+        # Detect outliers but don't remove them - flag for analysis
+        outlier_flags, _ = detect_solar_metric_outliers(df)
+        for col in outlier_flags.columns:
+            if col in df.columns or col.replace("_outlier", "") in df.columns:
+                df[col] = outlier_flags[col]
+    
+    return df
+
+
+def load_country_dataset_from_upload(uploaded_file, country: str) -> pd.DataFrame:
+    """Load dataset from an uploaded file object.
+    
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+        country: Country name for labeling
+    """
+    import io
+    # Reset file pointer in case it was read before
+    uploaded_file.seek(0)
+    df = pd.read_csv(io.BytesIO(uploaded_file.read()))
+    df = _clean_dataframe(df.copy(), apply_outlier_detection=True)
+    df["country"] = country
     return df
 
 
 @lru_cache(maxsize=len(FILE_MAP))
-def load_country_dataset(country: str) -> pd.DataFrame:
+def load_country_dataset(country: str, apply_outlier_detection: bool = True) -> pd.DataFrame:
     """Return the cleaned dataset for a single country, creating it if needed."""
 
     if country not in FILE_MAP:
@@ -71,23 +267,64 @@ def load_country_dataset(country: str) -> pd.DataFrame:
     if clean_path.exists():
         df = pd.read_csv(clean_path)
     else:
-        if not raw_path.exists():
-            raise FileNotFoundError(f"No dataset available for {country} at {raw_path}")
-        df = pd.read_csv(raw_path)
-        df = _clean_dataframe(df)
-        clean_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(clean_path, index=False)
+        if raw_path.exists():
+            df = pd.read_csv(raw_path)
+        else:
+            # Cloud fallback: try fetching from GitHub raw
+            candidate_urls = [f"{GITHUB_RAW_BASE}/{config['clean']}"]
+            if "raw" in config:
+                candidate_urls.append(f"{GITHUB_RAW_BASE}/{config['raw']}")
+            last_error: Exception | None = None
+            df = None  # type: ignore[assignment]
+            for url in candidate_urls:
+                try:
+                    resp = requests.get(url, timeout=30)
+                    resp.raise_for_status()
+                    df = pd.read_csv(pd.compat.StringIO(resp.text))  # type: ignore[attr-defined]
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if df is None:
+                raise FileNotFoundError(
+                    f"No dataset available for {country}. Looked at "
+                    f"{raw_path} and {', '.join(candidate_urls)}. Last error: {last_error}"
+                )
+        df = _clean_dataframe(df, apply_outlier_detection=apply_outlier_detection)
+        try:
+            clean_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(clean_path, index=False)
+        except Exception:
+            # In read-only environments, just skip saving
+            pass
 
-    df = _clean_dataframe(df.copy())
+    df = _clean_dataframe(df.copy(), apply_outlier_detection=apply_outlier_detection)
     df["country"] = country
     return df
 
 
-def load_combined_dataset(countries: Iterable[str] | None = None) -> pd.DataFrame:
-    """Return a concatenated dataframe for the provided countries."""
+def load_combined_dataset(
+    countries: Iterable[str] | None = None,
+    uploaded_files: dict | None = None
+) -> pd.DataFrame:
+    """Return a concatenated dataframe for the provided countries.
+    
+    Args:
+        countries: List of country names to load
+        uploaded_files: Dictionary mapping country names to uploaded file objects
+    """
 
     selected = list(countries) if countries is not None else AVAILABLE_COUNTRIES
-    frames = [load_country_dataset(country) for country in selected]
+    frames = []
+    
+    for country in selected:
+        # Check if we have an uploaded file for this country
+        if uploaded_files and country in uploaded_files:
+            df = load_country_dataset_from_upload(uploaded_files[country], country)
+        else:
+            # Fall back to local files
+            df = load_country_dataset(country, apply_outlier_detection=True)
+        frames.append(df)
+    
     combined = pd.concat(frames, ignore_index=True)
     combined["country"] = combined["country"].astype("category")
     return combined
